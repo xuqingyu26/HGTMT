@@ -7,3 +7,15 @@ PyTorch implementation of  "Heterogeneous Graph Transformer for Multiple Tiny Ob
 * The multiple tiny object tracking dataset is composed of two modalities: visible and thermal, and is well aligned.
 ## Code: 
  * Create the working environment through environment.yml
+ * Run training/main_RGBT-Tiny_graph_gnnloss.py for training.
+ * Run tracking/RGBT-Tiny_private_graph_Track2_crossmodal.py for tracking.
+## Acknowledgement:
+ * Thid repository benefits a lot from [TransCenter](https://github.com/yihongXU/TransCenter) and [GSDT](https://github.com/yongxinw/GSDT).
+## Cite:
+@article{xu2024heterogeneous,
+  title={Heterogeneous Graph Transformer for Multiple Tiny Object Tracking in RGB-T Videos},
+  author={Xu, Qingyu and Wang, Longguang and Sheng, Weidong and Wang, Yingqian and Xiao, Chao and Ma, Chao and An, Wei},
+  journal={IEEE Transactions on Multimedia},
+  year={2024},
+  publisher={IEEE}
+}
