@@ -12,6 +12,7 @@ PyTorch implementation of  "Heterogeneous Graph Transformer for Multiple Tiny Ob
 ## Acknowledgement:
  * Thid repository benefits a lot from [TransCenter](https://github.com/yihongXU/TransCenter) and [GSDT](https://github.com/yongxinw/GSDT).
 ## Cite:
+```
 @article{xu2024heterogeneous,
   title={Heterogeneous Graph Transformer for Multiple Tiny Object Tracking in RGB-T Videos},
   author={Xu, Qingyu and Wang, Longguang and Sheng, Weidong and Wang, Yingqian and Xiao, Chao and Ma, Chao and An, Wei},
@@ -19,3 +20,4 @@ PyTorch implementation of  "Heterogeneous Graph Transformer for Multiple Tiny Ob
   year={2024},
   publisher={IEEE}
 }
+```
