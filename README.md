@@ -11,7 +11,7 @@ PyTorch implementation of  "Heterogeneous Graph Transformer for Multiple Tiny Ob
  * Run training/main_RGBT-Tiny_graph_gnnloss.py for training.
  * Run tracking/RGBT-Tiny_private_graph_Track2_crossmodal.py for tracking.
 ## Acknowledgement:
- * Thid repository benefits a lot from [TransCenter](https://github.com/yihongXU/TransCenter) and [GSDT](https://github.com/yongxinw/GSDT).
+ * This repository benefits a lot from [TransCenter](https://github.com/yihongXU/TransCenter) and [GSDT](https://github.com/yongxinw/GSDT).
 ## Cite:
 ```
 @article{xu2024heterogeneous,
