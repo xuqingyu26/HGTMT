@@ -1,0 +1,67 @@
+tracktor:
+  name: TransCenter
+  module_name: MOT
+  desription: transformer
+  seed: 12345
+  network: transformer
+
+  output_dir: .
+  obj_detect_model: .
+
+  reid_weights: None
+
+  frame_split: [0.0, 1.0]
+  seqs_str: ' DJI_0028_3
+              DJI_0030_2
+              DJI_0032_3
+              DJI_0049_2
+              DJI_0051_2
+              DJI_0061_2
+              DJI_0073_3
+              DJI_0109_1
+              DJI_0119_2
+              DJI_0129_2
+              DJI_0141_2
+              DJI_0155_2
+              DJI_0159_2
+              DJI_0169_3
+              DJI_0173_2
+              DJI_0181_3
+              DJI_0221_2
+              DJI_0225_1
+              DJI_0237_2
+              DJI_0255_1
+              DJI_0257_2
+              DJI_0277_2
+              DJI_0283_1
+              DJI_0303_2
+              DJI_0307_2
+              DJI_0309_4
+              DJI_0325_2
+              DJI_0327_3
+              DJI_0339_2
+              DJI_0345_2
+                          '
+  tracker:
+    track_thresh: 0.3
+    match_thresh: 0.9
+    motion_model:
+      enabled: False
+      # average velocity over last n_steps steps
+      n_steps: 5
+      # if true, only model the movement of the bounding box center. If false, width and height are also modeled.
+      center_only: True
+    # 0 tells the tracker to use private detections (Faster R-CNN)
+    public_detections: False
+    # How much last appearance features are to keep
+    max_features_num: 10
+    # Do camera motion compensation
+    do_align: True
+    # Use siamese network to do reid
+    do_reid: True
+    # How much timesteps dead tracks are kept and cnosidered for reid
+    inactive_patience: 60
+    # How similar do image and old track need to be to be considered the same person
+    reid_sim_threshold: 3.0
+    # How much IoU do track and image need to be considered for matching
+    reid_iou_threshold: 0.1
