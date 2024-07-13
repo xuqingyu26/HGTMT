@@ -10,12 +10,14 @@ sys.path.insert(0, cur_dir)
 
 import time
 from collections import deque
-
+from utils import make_matching_plot_fast
+import matplotlib.cm as cm
+from mmdet.core.visualization import imshow_det_bboxes
 import numpy as np
 import torch
 import torch.nn.functional as F
 import torchvision.transforms as transforms
-
+from post_processing.utils import _nms, _topk, _tranpose_and_gather_feat
 import cv2
 from PIL import Image, ImageDraw, ImageFont
 from util.tracker_util import bbox_overlaps
@@ -99,6 +101,7 @@ class Tracker:
         self.im_index = 0
         self.track_num_i = 0
         self.results_i = {}
+        self.ssim = []
 
     def linear_assignment(self, cost_matrix, thresh):
         if cost_matrix.size == 0:
@@ -156,7 +159,7 @@ class Tracker:
             self.track_num_i += num_new
 
     def dual_tracks_dets_matching_tracking(self, raw_dets, raw_scores, pre2cur_cts, pos, gather_feat, reid_cts,
-                                           raw_det_feats, raw_cls, hs_m=None, isV=True):
+                                           raw_det_feats, raw_cls, hs_m=None, edge=None, isV=True):
 
         if pos is None:
             pos = self.get_pos(isV).clone()
@@ -191,10 +194,11 @@ class Tracker:
             cls_second = raw_cls[inds_second]
             reid_cts_second = reid_cts[inds_second]
             second_det_feats = raw_det_feats[inds_second]
-
+            edge_second = edge[inds_second]
             # index high-score dets #
             remain_inds = raw_scores > self.main_args.track_thresh_high
             dets = raw_dets[remain_inds]
+            edge_remain = edge[remain_inds]
             det_feats = raw_det_feats[remain_inds]
             scores_keep = raw_scores[remain_inds]
             cls_keep = raw_cls[remain_inds]
@@ -209,7 +213,10 @@ class Tracker:
 
                 assert dets.shape[0] == scores_keep.shape[0]
 
-                sim_mat = 1
+                if not edge == None:
+                    sim_mat = edge.permute(1, 0)
+                else:
+                    sim_mat = 1
                 # matching with gIOU
                 ##################
                 # data_list = []
@@ -245,8 +252,9 @@ class Tracker:
                 # sim_matrix = sim.to_dense()
                 # sim_mat = sim_matrix[:gather_feat[0].shape[0], gather_feat[0].shape[0]:]
                 # sim_mat = sim_mat + torch.ones_like(sim_mat) * (1e-4)
-                ##################
+                ##################warped_pos
                 iou_dist = box_ops.generalized_box_iou(pre_dets, dets)
+                # iou_dist = box_ops.generalized_box_iou(warped_pos, dets)
 
                 # todo fuse with dets scores here.
                 if self.main_args.fuse_scores:
@@ -255,7 +263,12 @@ class Tracker:
                 if self.main_args.fuse_gnn_sim:
                     iou_dist *= sim_mat
 
+                ########
+                # original
                 iou_dist = 1 - iou_dist
+                #######
+                # plus edge
+                # iou_dist = 1 - iou_dist - edge_remain.permute(1,0)
 
                 # todo recover inactive tracks here ?
 
@@ -316,15 +329,6 @@ class Tracker:
                     u_track = [track_indices[t_idx] for t_idx in u_track_second]
 
                     if matches.shape[0] > 0:
-                        # second_det_feats = F.grid_sample(raw_det_feats, reid_cts_second.unsqueeze(0).unsqueeze(0),
-                        #                                  mode='bilinear', padding_mode='zeros', align_corners=False)[0,
-                        #                    :, 0,
-                        #                    :].transpose(0, 1)
-                        # second_det_feats = F.grid_sample(reid_feats,
-                        #                                  reid_cts_second[matches[:, 1]].unsqueeze(0).unsqueeze(0),
-                        #                                  mode='bilinear', padding_mode='zeros', align_corners=False)[:,
-                        #                    :, 0, :]
-                        # update track dets, scores #
                         for cc, (idx_match, idx_det) in enumerate(zip(matches[:, 0], matches[:, 1])):
                             idx_track = track_indices[idx_match]
                             # print("low score match:", idx_track)
@@ -370,7 +374,7 @@ class Tracker:
 
             self.tracks_i = self.new_tracks
 
-        return [pos_birth, scores_birth, dets_features_birth, cls_birth]
+        return [pos_birth, scores_birth, dets_features_birth, cls_birth, edge]
 
     def get_pos(self, isV=-1):
         """Get the positions of all active tracks."""
@@ -556,7 +560,61 @@ class Tracker:
                         new_det_features = torch.zeros(size=(0, 128), device=self.sample_r.tensors.device).float()
 
         return new_det_pos, new_det_scores, new_det_features, new_det_cls
+    def generic_decode(self, hm, ct, wh, reg, K=1):
+        heat = hm
+        batch, cat, height, width = heat.size()
+        scores, inds, clses, ys0, xs0 = _topk(heat, K=K)
+        clses = clses.view(batch, K)
+        scores = scores.view(batch, K)
+        cts = torch.cat([xs0.unsqueeze(2), ys0.unsqueeze(2)], dim=2)
+        ret = {'scores': scores, 'clses': clses.float(),
+               'xs': xs0, 'ys': ys0, 'cts': cts}
+        reg = _tranpose_and_gather_feat(reg, inds)
+        reg = reg.view(batch, K, 2)
+        xs = xs0.view(batch, K, 1) + reg[:, :, 0:1]
+        ys = ys0.view(batch, K, 1) + reg[:, :, 1:2]
+        # xyh center_offset
+        center_offset = ct
+        center_offset = _tranpose_and_gather_feat(center_offset, inds)  # B x K x (F)
+        # wh = wh.view(batch, K, -1)
+        center_offset = center_offset.view(batch, K, 2)
+        xs = xs + center_offset[:, :, 0:1]
+        ys = ys + center_offset[:, :, 1:2]
 
+        wh = _tranpose_and_gather_feat(wh, inds)  # B x K x (F)
+
+        wh = wh.view(batch, K, 2)
+        wh[wh < 0] = 0
+        if wh.size(2) == 2 * cat:  # cat spec
+            wh = wh.view(batch, K, -1, 2)
+            cats = clses.view(batch, K, 1, 1).expand(batch, K, 1, 2)
+            wh = wh.gather(2, cats.long()).squeeze(2)  # B x K x 2
+        else:
+            pass
+        bboxes = torch.cat([xs - wh[..., 0:1] / 2,
+                            ys - wh[..., 1:2] / 2,
+                            xs + wh[..., 0:1] / 2,
+                            ys + wh[..., 1:2] / 2], dim=2)
+        ret['bboxes'] = bboxes
+        return ret
+
+    def mask_f(self, x, bbox):
+        ux = torch.zeros_like(x)
+        ux[:, :, int(bbox[1]):int(bbox[3]), int(bbox[0]):int(bbox[2])]=x[:, :, int(bbox[1]):int(bbox[3]), int(bbox[0]):int(bbox[2])]
+        return ux
+    def find_match(self, outputs, bbox, isv):
+        output = outputs[isv]
+        un = bbox/4
+        hm_u = output['hm'][0]
+        hm_u = torch.clamp(hm_u.sigmoid(), min=1e-4, max=1 - 1e-4)
+        hm_u = _nms(hm_u)
+        hm_u = self.mask_f(hm_u, un)
+        ct_u = self.mask_f(output['center_offset'][0], un)
+        wh_u = self.mask_f(output['wh'][0], un)
+        reg_u = self.mask_f(output['reg'][0], un)
+        ret = self.generic_decode(hm_u, ct_u, wh_u, reg_u, 1)
+        ret['bboxes'] = ret['bboxes'].squeeze() * self.main_args.down_ratio
+        return ret
     @torch.no_grad()
     def dual_step_reidV3_pre_tracking_vit(self, blob):
         """This function should be called every timestep to perform tracking with a blob
@@ -651,15 +709,17 @@ class Tracker:
         # samples_r: NestedTensor, samples_i, pre_samples_r: NestedTensor, pre_samples_i, pre_cts: Tensor,
         #                 mypos, trans
 
-        outputs, [gather_feat_r, gather_feat_i] = self.obj_detect(samples_r=self.sample_r,
-                                                                  pre_samples_r=self.pre_sample_r,
-                                                                  samples_i=self.sample_i,
-                                                                  pre_samples_i=self.pre_sample_i,
-                                                                  pre_cts_r=pre_cts_r.clone().unsqueeze(
-                                                                      0),
-                                                                  pre_cts_i=pre_cts_i.clone().unsqueeze(
-                                                                      0),
-                                                                  no_pre_cts=no_pre_cts)
+        outputs, [gather_feat_r, gather_feat_i], [edge_r, edge_i] = self.obj_detect(samples_r=self.sample_r,
+                                                                                    pre_samples_r=self.pre_sample_r,
+                                                                                    samples_i=self.sample_i,
+                                                                                    pre_samples_i=self.pre_sample_i,
+                                                                                    pre_cts_r=pre_cts_r.clone().unsqueeze(
+                                                                                        0),
+                                                                                    pre_cts_i=pre_cts_i.clone().unsqueeze(
+                                                                                        0),
+                                                                                    no_pre_cts=no_pre_cts)
+        self.heat_r = outputs[0]['hm']
+        self.heat_i = outputs[1]['hm']
         # import matplotlib
         # import matplotlib.pyplot as plt
         # matplotlib.use('tkagg')
@@ -686,23 +746,13 @@ class Tracker:
         # plt.savefig(f'{video_name}Frame{fim_id}.png')
         # plt.show()
 
-        video_name = blob['video_name']
-        fim_id = int(blob['frame_name'][:-4])
-        det_pos_r, det_scores_r, pre2cur_cts_r, mypos_r, reid_cts_r, reid_feat_r, det_cls_r = self.out_decode(
-            outputs[0],
-            pre_cts_r,
-            no_pre_cts,
-            mypos_r,
-            padw, padh,
-            ratio)
+        # video_name = blob['video_name']
+        # fim_id = int(blob['frame_name'][:-4])
+        det_pos_r, det_scores_r, pre2cur_cts_r, mypos_r, reid_cts_r, reid_feat_r, det_cls_r, edge_r = self.out_decode(
+            outputs[0], pre_cts_r, no_pre_cts, mypos_r, padw, padh, ratio, edge_r)
 
-        det_pos_i, det_scores_i, pre2cur_cts_i, mypos_i, reid_cts_i, reid_feat_i, det_cls_i = self.out_decode(
-            outputs[1],
-            pre_cts_i,
-            no_pre_cts,
-            mypos_i,
-            padw, padh,
-            ratio)
+        det_pos_i, det_scores_i, pre2cur_cts_i, mypos_i, reid_cts_i, reid_feat_i, det_cls_i, edge_i = self.out_decode(
+            outputs[1], pre_cts_i, no_pre_cts, mypos_i, padw, padh, ratio, edge_i)
 
         ###########################################################################################################################################################
         # label_r_txt = os.path.join(
@@ -866,26 +916,152 @@ class Tracker:
         # Predict tracks #
         ##################
         if len(self.tracks_r):
-            [det_pos_r, det_scores_r, dets_features_birth_r, det_cls_r] = self.dual_tracks_dets_matching_tracking(
+            [det_pos_r, det_scores_r, dets_features_birth_r, det_cls_r,
+             edge_r] = self.dual_tracks_dets_matching_tracking(
                 raw_dets=det_pos_r, raw_scores=det_scores_r, pre2cur_cts=pre2cur_cts_r, pos=mypos_r,
                 gather_feat=gather_feat_r, reid_cts=reid_cts_r, raw_det_feats=reid_feat_r, raw_cls=det_cls_r,
-                hs_m=outputs[0]['reid_mem'], isV=True)
+                hs_m=outputs[0]['reid_mem'], edge=edge_r, isV=True)
         else:
             dets_features_birth_r = \
                 F.grid_sample(reid_feat_r, reid_cts_r.unsqueeze(0).unsqueeze(0), mode='bilinear', padding_mode='zeros',
                               align_corners=False)[:, :, 0, :].transpose(1, 2)[0]
 
         if len(self.tracks_i):
-            [det_pos_i, det_scores_i, dets_features_birth_i, det_cls_i] = self.dual_tracks_dets_matching_tracking(
+            [det_pos_i, det_scores_i, dets_features_birth_i, det_cls_i,
+             edge_i] = self.dual_tracks_dets_matching_tracking(
                 raw_dets=det_pos_i, raw_scores=det_scores_i, pre2cur_cts=pre2cur_cts_i, pos=mypos_i,
                 gather_feat=gather_feat_i, reid_cts=reid_cts_i, raw_det_feats=reid_feat_i, raw_cls=det_cls_i,
-                hs_m=outputs[1]['reid_mem'], isV=False)
+                hs_m=outputs[1]['reid_mem'], edge=edge_i, isV=False)
         else:
             dets_features_birth_i = \
                 F.grid_sample(reid_feat_i, reid_cts_i.unsqueeze(0).unsqueeze(0), mode='bilinear',
                               padding_mode='zeros',
                               align_corners=False)[:, :, 0, :].transpose(1, 2)[0]
-        ###############################################################################################################
+        # ###############################################################################################################
+        #
+        # # Cross modal matching
+        # ########################################################################################
+        # # track_r with track_i
+        # tid_r = []
+        # tid_i = []
+        # if len(self.tracks_r) > 0 and len(self.tracks_i) > 0:
+        #     c1 = []
+        #     c2 = []
+        #     for t in self.tracks_r:
+        #         c1.append(t.pos)
+        #         tid_r.append(t.id)
+        #     c1 = torch.cat(c1, dim=0)
+        #     for t in self.tracks_i:
+        #         c2.append(t.pos)
+        #         tid_i.append(t.id)
+        #     c2 = torch.cat(c2, dim=0)
+        #     iou_dist = box_ops.generalized_box_iou(c1, c2)
+        #     matches, u_track, u_detection = self.linear_assignment(iou_dist.cpu().numpy(),
+        #                                                            thresh=0.3)
+        #     if matches.shape[0] > 0:
+        #         for idx_track, idx_det in zip(matches[:, 0], matches[:, 1]):
+        #             tr = self.tracks_r[idx_track]
+        #             ti = self.tracks_i[idx_det]
+        #
+        #             tr.match_id = ti.id
+        #             tr.match_queue.append(tr.match_id)
+        #             tr.match_patience[tr.match_id] = tr.match_queue.count(tr.match_id)
+        #
+        #             ti.match_id = tr.id
+        #             ti.match_queue.append(ti.match_id)
+        #             ti.match_patience[ti.match_id] = ti.match_queue.count(ti.match_id)
+        # #########################################################################################
+        # # inactive_track_r with track_i
+        # if len(self.inactive_tracks_r) > 0 and len(self.tracks_i) > 0:
+        #     utrs = []
+        #     for utr in self.inactive_tracks_r:
+        #         utrs.append(utr.pos)
+        #
+        #     candidates_i = []
+        #     for t in self.tracks_i:
+        #         if t.birth_active >= 3:
+        #             candidates_i.append(t.pos)
+        #     utrs = torch.cat(utrs, dim=0)
+        #     if len(candidates_i) > 0:
+        #         candidates_i = torch.cat(candidates_i, dim=0)
+        #         iou_dist_r = box_ops.generalized_box_iou(utrs, candidates_i)
+        #         matches, u_track, u_detection = self.linear_assignment(iou_dist_r.cpu().numpy(),
+        #                                                                thresh=0.4)
+        #
+        #         if matches.shape[0] > 0:
+        #             # update track dets, scores #
+        #             for idx_track, idx_det in zip(matches[:, 0], matches[:, 1]):
+        #                 t = self.inactive_tracks_r[idx_track]
+        #                 t.pos = candidates_i[[idx_det]]
+        #                 t.birth_active = t.birth_active + 1
+        #                 t.inactive = 0
+        #                 t.match_id = self.tracks_i[idx_det].id
+        #                 t.match_queue.append(t.match_id)
+        #                 t.match_patience[t.match_id] = t.match_queue.count(t.match_id)
+        #
+        #         self.new_inactive_tracks_r = []
+        #         for i, t in enumerate(self.inactive_tracks_r):
+        #             if matches.shape[0] > 0:
+        #                 if i in matches[:, 0]:
+        #                     self.tracks_r.append(t)
+        #             elif t.match_id in t.match_patience.keys() and t.match_id in tid_i:
+        #                 if t.match_patience[t.match_id] > 3 :
+        #                     t.pos = self.tracks_i[tid_i.index(t.match_id)].pos
+        #                     t.birth_active = 1
+        #                     t.inactive = 0
+        #                     self.tracks_r.append(t)
+        #             else:
+        #                 t.inactive += 1
+        #                 if t.inactive < 10:
+        #                     self.new_inactive_tracks_r.append(t)
+        #         self.inactive_tracks_r = self.new_inactive_tracks_r
+        #
+        # #################################################################################
+        # # inactive_track_i with track_r
+        # if len(self.inactive_tracks_i) > 0 and len(self.tracks_r) > 0:
+        #     utis = []
+        #     for uti in self.inactive_tracks_i:
+        #         utis.append(uti.pos)
+        #     candidates_r = []
+        #     for t in self.tracks_r:
+        #         if t.birth_active >= 3:
+        #             candidates_r.append(t.pos)
+        #     utis = torch.cat(utis, dim=0)
+        #     if len(candidates_r) > 0:
+        #         candidates_r = torch.cat(candidates_r, dim=0)
+        #         iou_dist_i = box_ops.generalized_box_iou(utis, candidates_r)
+        #         matches, u_track, u_detection = self.linear_assignment(iou_dist_i.cpu().numpy(),
+        #                                                                thresh=0.4)
+        #
+        #         if matches.shape[0] > 0:
+        #             # update track dets, scores #
+        #             for idx_track, idx_det in zip(matches[:, 0], matches[:, 1]):
+        #                 t = self.inactive_tracks_i[idx_track]
+        #                 t.pos = candidates_r[[idx_det]]
+        #                 t.birth_active = t.birth_active + 1
+        #                 t.inactive = 0
+        #                 t.match_id = self.tracks_r[idx_det].id
+        #                 t.match_queue.append(t.match_id)
+        #                 t.match_patience[t.match_id] = t.match_queue.count(t.match_id)
+        #
+        #         self.new_inactive_tracks_i = []
+        #         for i, t in enumerate(self.inactive_tracks_i):
+        #             if matches.shape[0] > 0:
+        #                 if i in matches[:, 0]:
+        #                     self.tracks_i.append(t)
+        #                 elif t.match_id in t.match_patience.keys() and t.match_id in tid_r:
+        #                     if t.match_patience[t.match_id] > 3:
+        #                         t.pos = self.tracks_r[tid_r.index(t.match_id)].pos
+        #                         t.birth_active = 1
+        #                         t.inactive = 0
+        #                         self.tracks_i.append(t)
+        #             else:
+        #                 t.inactive += 1
+        #                 if t.inactive < 10:
+        #                     self.new_inactive_tracks_i.append(t)
+        #         self.inactive_tracks_i = self.new_inactive_tracks_i
+
+        #######################################################################################
 
         #####################
         # Create new tracks for r#
@@ -1028,76 +1204,155 @@ class Tracker:
             if det_pos_i.nelement() > 0:
                 self.add(det_pos_i, det_scores_i, dets_features_birth_i, det_cls_i, isV=False)
 
-        # Cross modal matching
-        if len(self.inactive_tracks_r) > 0 and len(self.tracks_i) > 0:
-            utrs = []
-            for utr in self.inactive_tracks_r:
-                utrs.append(utr.pos)
+        # pre_dets = []
+        # pre_cls = []
+        # pre_score = []
+        # for t in self.tracks_r:
+        #     pre_dets.append(t.pos)
+        #     pre_cls.append(t.cls.item())
+        #     pre_score.append(t.score.item())
+        # pre_dets = torch.cat(pre_dets, dim=0)
+        # pre_cls = torch.tensor(pre_cls)
+        # pre_score = torch.tensor(pre_score)
+        # dets = []
+        # cls = []
+        # score = []
+        # for t in self.tracks_i:
+        #     dets.append(t.pos)
+        #     cls.append(t.cls.item())
+        #     score.append(t.score.item())
+        # dets = torch.cat(dets, dim=0)
+        # cls = torch.tensor(cls)
+        # score = torch.tensor(score)
+        #
+        # iou_dist = box_ops.generalized_box_iou(pre_dets, dets)
+        # iou_dist = 1 - iou_dist
+        # matches, u_track, u_detection = self.linear_assignment(iou_dist.cpu().numpy(),
+        #                                                        thresh=self.main_args.match_thresh)
 
-            candidates_i = []
-            for t in self.tracks_i:
-                if t.birth_active >= 3:
-                    candidates_i.append(t.pos)
-            utrs = torch.cat(utrs, dim=0)
-            if len(candidates_i) > 0:
-                candidates_i = torch.cat(candidates_i, dim=0)
-                iou_dist_r = box_ops.generalized_box_iou(utrs, candidates_i)
-                matches, u_track, u_detection = self.linear_assignment(iou_dist_r.cpu().numpy(),
-                                                                       thresh=0.4)
 
-                if matches.shape[0] > 0:
-                    # update track dets, scores #
-                    for idx_track, idx_det in zip(matches[:, 0], matches[:, 1]):
-                        t = self.inactive_tracks_r[idx_track]
-                        t.pos = candidates_i[[idx_det]]
-                        t.birth_active = t.birth_active + 1
-                        t.inactive = 0
 
-                self.new_inactive_tracks_r = []
-                for i, t in enumerate(self.inactive_tracks_r):
-                    if i in matches[:, 0]:
-                        self.tracks_r.append(t)
-                    else:
-                        t.inactive += 1
-                        if t.inactive < 10:
-                            self.new_inactive_tracks_r.append(t)
-                self.inactive_tracks_r = self.new_inactive_tracks_r
 
-        #################################################################################
-        if len(self.inactive_tracks_i) > 0 and len(self.tracks_r) > 0:
-            utis = []
-            for uti in self.inactive_tracks_i:
-                utis.append(uti.pos)
-            candidates_r = []
-            for t in self.tracks_r:
-                if t.birth_active >= 3:
-                    candidates_r.append(t.pos)
-            utis = torch.cat(utis, dim=0)
-            if len(candidates_r) > 0:
-                candidates_r = torch.cat(candidates_r, dim=0)
-                iou_dist_i = box_ops.generalized_box_iou(utis, candidates_r)
-                matches, u_track, u_detection = self.linear_assignment(iou_dist_i.cpu().numpy(),
-                                                                       thresh=0.4)
+        # un = pre_dets[u_track[0]] / 4
+        # hm_u = self.heat_i[0]
+        # hm_u = torch.clamp(hm_u.sigmoid(), min=1e-4, max=1 - 1e-4)
+        # hm_u = mask_f(hm_u, un)
+        # ct_u = mask_f(outputs[1]['center_offset'][0], un)
+        # wh_u = mask_f(outputs[1]['wh'][0], un)
+        # reg_u = mask_f(outputs[1]['reg'][0], un)
+        # ret = generic_decode(hm_u, ct_u, wh_u, reg_u, 1)
 
-                if matches.shape[0] > 0:
-                    # update track dets, scores #
-                    for idx_track, idx_det in zip(matches[:, 0], matches[:, 1]):
-                        t = self.inactive_tracks_i[idx_track]
-                        t.pos = candidates_r[[idx_det]]
-                        t.birth_active = t.birth_active + 1
-                        t.inactive = 0
+        # ret = self.find_match(outputs, pre_dets[u_track[0]], 1)
 
-                self.new_inactive_tracks_i = []
-                for i, t in enumerate(self.inactive_tracks_i):
-                    if i in matches[:, 0]:
-                        self.tracks_i.append(t)
-                    else:
-                        t.inactive += 1
-                        if t.inactive < 10:
-                            self.new_inactive_tracks_i.append(t)
-                self.inactive_tracks_i = self.new_inactive_tracks_i
 
-        #######################################################################################
+        # ct_u = outputs[1]['center_offset'][0, :, :, int(un[1]):int(un[3]), int(un[0]):int(un[2])]
+        # wh_u = outputs[1]['wh'][0, :, :, int(un[1]):int(un[3]), int(un[0]):int(un[2])]
+        # reg_u = outputs[1]['reg'][0, :, :, int(un[1]):int(un[3]), int(un[0]):int(un[2])]
+        # ret = generic_decode(hm_u, ct_u, wh_u, reg_u, 1)
+        # bb = ret['bboxes']*4
+        # sc = ret['scores']
+
+
+        # r_cts = self.bbox_to_ct(pre_dets)/4
+        # i_cts = self.bbox_to_ct(dets)/4
+        # pre_track_feature_r = self.obj_detect.transformer.tracks_feat_r
+        # pre_track_feature_i = self.obj_detect.transformer.tracks_feat_i
+        # tracks_feat_r = F.grid_sample(center_feats_r, (2.0 * track_sample_r - 1.0).unsqueeze(1),
+        #                               mode='bilinear', padding_mode='zeros', align_corners=False)[:,
+        #                 :, 0, :].unsqueeze(-2)
+        # tracks_feat_i = F.grid_sample(center_feats_i, (2.0 * track_sample_i - 1.0).unsqueeze(1),
+        #                               mode='bilinear', padding_mode='zeros', align_corners=False)[:,
+        #                 :, 0, :].unsqueeze(-2)
+
+        # kpts0 = pre_dets.clone()
+        # kpts0[:, 0] = (kpts0[:, 0] + kpts0[:, 2]) / 2
+        # kpts0[:, 1] = (kpts0[:, 1] + kpts0[:, 3]) / 2
+        # kpts0 = kpts0[:, :2]
+        #
+        # kpts1 = dets.clone()
+        # kpts1[:, 0] = (kpts1[:, 0] + kpts1[:, 2]) / 2
+        # kpts1[:, 1] = (kpts1[:, 1] + kpts1[:, 3]) / 2
+        # kpts1 = kpts1[:, :2]
+        #
+        # mkpts0_iou = kpts0[matches[:, 0]]
+        # mkpts1_iou = kpts1[matches[:, 1]]
+        # color_iou = cm.jet(score[matches[:, 1]].cpu().numpy())
+        # text_iou = [
+        #     'Iou',
+        #     'Keypoints: {}:{}'.format(len(kpts0), len(kpts1)),
+        #     'Matches: {}'.format(len(mkpts0_iou))
+        # ]
+        #
+        # last_frame = blob['img_r'].cpu().numpy()
+        # frame = blob['img_i'].cpu().numpy()
+        # #
+        # pre_score_unmatch = pre_score[u_track]
+        # pre_cls_unmatch = pre_cls[u_track]
+        # pre_dets_unmatch = pre_dets[u_track]
+        # # pre_cts_unmatch = pre_dets_unmatch.clone()
+        # pre_cts_unmatch = self.bbox_to_ct(pre_dets_unmatch)
+        # import torchvision.ops as ops
+        #
+        # pre_patch_score = [ops.roi_align(self.heat_r.squeeze(0), [pre_dets_unmatch[i].unsqueeze(0) / 4],
+        #                                  (pre_dets_unmatch[i][2] - pre_dets_unmatch[i][0],
+        #                                   pre_dets_unmatch[i][3] - pre_dets_unmatch[i][1])) for
+        #                    i in range(pre_dets_unmatch.shape[0])]
+        #
+        # CLASSES = ('m', 'um')
+        # # colors = [[random.randint(0, 255) for _ in range(3)] for _ in range(2)]
+        # colors = [(0, 255, 0), (255, 0, 0)]
+        # if len(matches[:, 0]) > 0:
+        #     pc = torch.ones_like(pre_cls)
+        #     pc[matches[:, 0]] = 0
+        #     cls = torch.ones_like(cls)
+        #     cls[matches[:, 1]] = 0
+        #     last_frame = imshow_det_bboxes(
+        #         last_frame,
+        #         pre_dets.cpu().numpy(),
+        #         pc,
+        #         None,
+        #         class_names=CLASSES,
+        #         bbox_color=colors,
+        #         text_color=None,
+        #         thickness=1,
+        #         font_size=0,
+        #         show=False,
+        #         out_file=f'super/frame_{fim_id}_R_iou.png')
+        #
+        #     frame = imshow_det_bboxes(
+        #         frame,
+        #         dets.cpu().numpy(),
+        #         cls,
+        #         None,
+        #         class_names=CLASSES,
+        #         bbox_color=colors,
+        #         text_color=None,
+        #         thickness=1,
+        #         font_size=0,
+        #         show=False,
+        #         out_file=f'super/frame_{fim_id}_I_iou.png')
+        #
+        #     frame_find = imshow_det_bboxes(
+        #         frame,
+        #         ret['bboxes'].unsqueeze(0).cpu().numpy(),
+        #         torch.ones(1).int(),
+        #         None,
+        #         class_names=CLASSES,
+        #         bbox_color=colors,
+        #         text_color=None,
+        #         thickness=1,
+        #         font_size=0,
+        #         show=False,
+        #         out_file=f'super/frame_{fim_id}_IU_iou.png')
+        #
+        #     out = make_matching_plot_fast(
+        #         last_frame, frame,
+        #         kpts0.cpu().numpy(), kpts1.cpu().numpy(), mkpts0_iou.cpu().numpy(),
+        #         mkpts1_iou.cpu().numpy(), color_iou, text_iou,
+        #         path=None, show_keypoints=True)
+        #
+        #     cv2.imshow('SuperGlue matches', out)
+        #     cv2.imwrite(f'super/SuperGlue_matches_{fim_id}_iou_cross.png', out)
 
         ####################
         # Generate Results #
@@ -1152,25 +1407,25 @@ class Tracker:
         for t in self.tracks_r:
             if t.id not in self.results_r.keys():
                 self.results_r[t.id] = {}
-            if t.birth_active > 3:
+            if t.birth_active > 0:
                 self.results_r[t.id][self.im_index] = np.concatenate(
                     [t.pos[0].cpu().numpy(), np.array([t.score.cpu()]), np.array([t.cls.cpu()])])
                 t.traj[self.im_index] = np.concatenate(
                     [t.pos[0].cpu().numpy(), np.array([t.score.cpu()]), np.array([t.cls.cpu()])])
-            elif t.birth_active == 3:
-
-                self.results_r[t.id][self.im_index] = np.concatenate(
-                    [t.pos[0].cpu().numpy(), np.array([t.score.cpu()]), np.array([t.cls.cpu()])])
-                if self.im_index - 1 in t.traj.keys():
-                    self.results_r[t.id][self.im_index - 1] = t.traj[self.im_index - 1]
-                if self.im_index - 2 in t.traj.keys():
-                    self.results_r[t.id][self.im_index - 2] = t.traj[self.im_index - 2]
-                t.traj[self.im_index] = np.concatenate(
-                    [t.pos[0].cpu().numpy(), np.array([t.score.cpu()]), np.array([t.cls.cpu()])])
-            else:
-                t.traj[self.im_index] = np.concatenate(
-                    [t.pos[0].cpu().numpy(), np.array([t.score.cpu()]), np.array([t.cls.cpu()])])
-            if t.birth_active > 3:
+            # elif t.birth_active == 3:
+            #
+            #     self.results_r[t.id][self.im_index] = np.concatenate(
+            #         [t.pos[0].cpu().numpy(), np.array([t.score.cpu()]), np.array([t.cls.cpu()])])
+            #     if self.im_index - 1 in t.traj.keys():
+            #         self.results_r[t.id][self.im_index - 1] = t.traj[self.im_index - 1]
+            #     if self.im_index - 2 in t.traj.keys():
+            #         self.results_r[t.id][self.im_index - 2] = t.traj[self.im_index - 2]
+            #     t.traj[self.im_index] = np.concatenate(
+            #         [t.pos[0].cpu().numpy(), np.array([t.score.cpu()]), np.array([t.cls.cpu()])])
+            # else:
+            #     t.traj[self.im_index] = np.concatenate(
+            #         [t.pos[0].cpu().numpy(), np.array([t.score.cpu()]), np.array([t.cls.cpu()])])
+            if t.birth_active > 0:
                 tlwh = t.bbox_to_tlwh()
                 online_tlwhs_r.append(tlwh.squeeze().cpu().numpy())
                 online_ids_r.append(t.id)
@@ -1178,22 +1433,22 @@ class Tracker:
         for t in self.tracks_i:
             if t.id not in self.results_i.keys():
                 self.results_i[t.id] = {}
-            if t.birth_active > 3:
+            if t.birth_active > 0:
                 self.results_i[t.id][self.im_index] = np.concatenate(
                     [t.pos[0].cpu().numpy(), np.array([t.score.cpu()]), np.array([t.cls.cpu()])])
                 t.traj[self.im_index] = np.concatenate(
                     [t.pos[0].cpu().numpy(), np.array([t.score.cpu()]), np.array([t.cls.cpu()])])
-            elif t.birth_active == 3 and t.inactive:
-                self.results_i[t.id][self.im_index] = np.concatenate(
-                    [t.pos[0].cpu().numpy(), np.array([t.score.cpu()]), np.array([t.cls.cpu()])])
-                self.results_i[t.id][self.im_index - 1] = t.traj[self.im_index - 1]
-                self.results_i[t.id][self.im_index - 2] = t.traj[self.im_index - 2]
-                t.traj[self.im_index] = np.concatenate(
-                    [t.pos[0].cpu().numpy(), np.array([t.score.cpu()]), np.array([t.cls.cpu()])])
-            else:
-                t.traj[self.im_index] = np.concatenate(
-                    [t.pos[0].cpu().numpy(), np.array([t.score.cpu()]), np.array([t.cls.cpu()])])
-            if t.birth_active > 3:
+            # elif t.birth_active == 3 and t.inactive:
+            #     self.results_i[t.id][self.im_index] = np.concatenate(
+            #         [t.pos[0].cpu().numpy(), np.array([t.score.cpu()]), np.array([t.cls.cpu()])])
+            #     self.results_i[t.id][self.im_index - 1] = t.traj[self.im_index - 1]
+            #     self.results_i[t.id][self.im_index - 2] = t.traj[self.im_index - 2]
+            #     t.traj[self.im_index] = np.concatenate(
+            #         [t.pos[0].cpu().numpy(), np.array([t.score.cpu()]), np.array([t.cls.cpu()])])
+            # else:
+            #     t.traj[self.im_index] = np.concatenate(
+            #         [t.pos[0].cpu().numpy(), np.array([t.score.cpu()]), np.array([t.cls.cpu()])])
+            if t.birth_active > 0:
                 tlwh = t.bbox_to_tlwh()
                 online_tlwhs_i.append(tlwh.squeeze().cpu().numpy())
                 online_ids_i.append(t.id)
@@ -1220,10 +1475,16 @@ class Tracker:
         self.pre_sample_i = self.sample_i
         return [self.im_index - 1, online_tlwhs_r, online_ids_r], [self.im_index - 1, online_tlwhs_i, online_ids_i]
 
+    def bbox_to_ct(self, bbox):
+        ct = bbox.clone()
+        ct[:, 0] = (bbox[:, 2] + bbox[:, 0]) / 2
+        ct[:, 1] = (bbox[:, 3] + bbox[:, 1]) / 2
+        return ct[:, :2]
+
     def get_results(self):
         return self.results_r, self.results_i
 
-    def out_decode(self, outputs, pre_cts, no_pre_cts, mypos, padw, padh, ratio):
+    def out_decode(self, outputs, pre_cts, no_pre_cts, mypos, padw, padh, ratio, edge):
         # # post processing #
 
         # todo check the output of det model
@@ -1247,9 +1508,9 @@ class Tracker:
 
         # fim_id = 197
         # plt.savefig(f'Frame{fim_id}.png')
-        plt.show()
+        # plt.show()
         decoded = generic_decode(output, K=self.main_args.K, opt=self.main_args,
-                                 pre_cts=pre_cts)
+                                 pre_cts=pre_cts, edge=edge)
         # decoded, pre_cts_scores, pre_cts_scores_track = generic_decode(output, K=self.main_args.K, opt=self.main_args,
         #                                                                pre_cts=pre_cts)
 
@@ -1290,7 +1551,7 @@ class Tracker:
         # reid_cts = reid_cts[filtered_idx]
         # post processing #
 
-        return out_boxes, out_scores, pre2cur_cts, mypos, reid_cts, outputs['reid'][0], out_cls
+        return out_boxes, out_scores, pre2cur_cts, mypos, reid_cts, outputs['reid'][0], out_cls, decoded['edge'][0]
 
     def ct_to_bbox(self, ct, w, h):
         cts = ct.clone()
@@ -1366,6 +1627,9 @@ class Track(object):
         self.inactive = 0
         self.traj = {}
         self.related_id = None
+        self.match_id = None
+        self.match_patience = {}
+        self.match_queue = []
 
     def has_positive_area(self):
         return self.pos[0, 2] > self.pos[0, 0] and self.pos[0, 3] > self.pos[0, 1]

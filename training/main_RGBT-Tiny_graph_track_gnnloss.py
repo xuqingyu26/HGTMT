@@ -99,7 +99,7 @@ def get_args_parser():
     # dataset parameters
     parser.add_argument('--dataset_file', default='rgbt_tiny')
     parser.add_argument('--datatype', default='rgb')
-    parser.add_argument('--data_dir', default='/home/user/PycharmProjects/data/MOT/RGBT-Tiny', type=str)
+    parser.add_argument('--data_dir', default='/ssd/data/MOT/RGBT-Tiny', type=str)
     parser.add_argument('--data_dir_ch', default='', type=str)
     parser.add_argument('--remove_difficult', action='store_true')
     parser.add_argument('--gnn_layer_num', default=1, type=int,
