@@ -1,40 +1,25 @@
 import copy
-import sys
 import os
-import csv
+import sys
 
 # dirty insert path #
 cur_path = os.path.realpath(__file__)
 cur_dir = "/".join(cur_path.split('/')[:-2])
 sys.path.insert(0, cur_dir)
 
-import time
 from collections import deque
-from utils import make_matching_plot_fast
-import matplotlib.cm as cm
-from mmdet.core.visualization import imshow_det_bboxes
 import numpy as np
 import torch
 import torch.nn.functional as F
 import torchvision.transforms as transforms
 from post_processing.utils import _nms, _topk, _tranpose_and_gather_feat
-import cv2
-from PIL import Image, ImageDraw, ImageFont
 from util.tracker_util import bbox_overlaps
 
-from torchvision.ops.boxes import clip_boxes_to_image, nms
+from torchvision.ops.boxes import clip_boxes_to_image
 import lap
 from post_processing.decode import generic_decode
 from util import box_ops
-import torch.nn as nn
-from torch_geometric.nn import GATConv
-from torch_geometric.data import Data as gData
-from torch_geometric.data import Batch
-from functools import partial
-from models.PVT_v2 import PyramidVisionTransformerV2
 from skimage.metrics import structural_similarity as ssim
-import matplotlib.pyplot as plt
-import matplotlib
 
 
 class Tracker:
@@ -560,6 +545,7 @@ class Tracker:
                         new_det_features = torch.zeros(size=(0, 128), device=self.sample_r.tensors.device).float()
 
         return new_det_pos, new_det_scores, new_det_features, new_det_cls
+
     def generic_decode(self, hm, ct, wh, reg, K=1):
         heat = hm
         batch, cat, height, width = heat.size()
@@ -600,11 +586,13 @@ class Tracker:
 
     def mask_f(self, x, bbox):
         ux = torch.zeros_like(x)
-        ux[:, :, int(bbox[1]):int(bbox[3]), int(bbox[0]):int(bbox[2])]=x[:, :, int(bbox[1]):int(bbox[3]), int(bbox[0]):int(bbox[2])]
+        ux[:, :, int(bbox[1]):int(bbox[3]), int(bbox[0]):int(bbox[2])] = x[:, :, int(bbox[1]):int(bbox[3]),
+                                                                         int(bbox[0]):int(bbox[2])]
         return ux
+
     def find_match(self, outputs, bbox, isv):
         output = outputs[isv]
-        un = bbox/4
+        un = bbox / 4
         hm_u = output['hm'][0]
         hm_u = torch.clamp(hm_u.sigmoid(), min=1e-4, max=1 - 1e-4)
         hm_u = _nms(hm_u)
@@ -615,6 +603,7 @@ class Tracker:
         ret = self.generic_decode(hm_u, ct_u, wh_u, reg_u, 1)
         ret['bboxes'] = ret['bboxes'].squeeze() * self.main_args.down_ratio
         return ret
+
     @torch.no_grad()
     def dual_step_reidV3_pre_tracking_vit(self, blob):
         """This function should be called every timestep to perform tracking with a blob
@@ -688,26 +677,6 @@ class Tracker:
 
         no_pre_cts = no_pre_cts_r and no_pre_cts_i
 
-        # w = hm_w /self.main_args.down_ratio
-        # h = hm_h / self.main_args.down_ratio
-        # pre_ct_sample_r = pre_cts_r.clone()
-        # pre_ct_sample_r[:, :, 0].clamp_(min=0, max=w - 1)
-        # pre_ct_sample_r[:, :, 1].clamp_(min=0, max=h - 1)
-        #
-        # pre_ct_sample_r[:, :, 0] /= w
-        # pre_ct_sample_r[:, :, 1] /= h
-        #
-        # pre_ct_sample_i = pre_cts_i.clone()
-        # pre_ct_sample_i[:, :, 0].clamp_(min=0, max=w - 1)
-        # pre_ct_sample_i[:, :, 1].clamp_(min=0, max=h - 1)
-        #
-        # pre_ct_sample_i[:, :, 0] /= w
-        # pre_ct_sample_i[:, :, 1] /= h
-
-        # pre_cts = pre_cts.squeeze()
-        # todo check
-        # samples_r: NestedTensor, samples_i, pre_samples_r: NestedTensor, pre_samples_i, pre_cts: Tensor,
-        #                 mypos, trans
 
         outputs, [gather_feat_r, gather_feat_i], [edge_r, edge_i] = self.obj_detect(samples_r=self.sample_r,
                                                                                     pre_samples_r=self.pre_sample_r,
@@ -720,201 +689,13 @@ class Tracker:
                                                                                     no_pre_cts=no_pre_cts)
         self.heat_r = outputs[0]['hm']
         self.heat_i = outputs[1]['hm']
-        # import matplotlib
-        # import matplotlib.pyplot as plt
-        # matplotlib.use('tkagg')
-        # hm = outputs[1]['hm'].squeeze()
-        # for i in range(hm.shape[0]):
-        #     plt.figure(i + 1)
-        #     plt.imshow(hm[i, :, :].cpu().numpy())
-        # plt.show()
 
-        # import matplotlib
-        # import matplotlib.pyplot as plt
-        # matplotlib.use('tkagg')
-        # hm = outputs[1]['hm'].squeeze()
-        # fig, axes = plt.subplots(nrows=2, ncols=4, figsize=(10, 8))
-        # for i in range(hm.shape[0]):
-        #     axes[i%2, i//2].imshow(hm[i, :, :].cpu().numpy())
-        #     axes[i%2, i//2].set_title(f'Channel {i+1}.')
-        #     # plt.figure(i + 1)
-        #     # plt.imshow(hm[i, :, :].cpu().numpy())
-        # axes[-1, -1].axis('off')
-        # plt.tight_layout()
-        #
-        # fim_id = 197
-        # plt.savefig(f'{video_name}Frame{fim_id}.png')
-        # plt.show()
-
-        # video_name = blob['video_name']
-        # fim_id = int(blob['frame_name'][:-4])
         det_pos_r, det_scores_r, pre2cur_cts_r, mypos_r, reid_cts_r, reid_feat_r, det_cls_r, edge_r = self.out_decode(
             outputs[0], pre_cts_r, no_pre_cts, mypos_r, padw, padh, ratio, edge_r)
 
         det_pos_i, det_scores_i, pre2cur_cts_i, mypos_i, reid_cts_i, reid_feat_i, det_cls_i, edge_i = self.out_decode(
             outputs[1], pre_cts_i, no_pre_cts, mypos_i, padw, padh, ratio, edge_i)
 
-        ###########################################################################################################################################################
-        # label_r_txt = os.path.join(
-        #     '/home/user/PycharmProjects/MOT_Project/mmtracking/data/MOT_00/labels_with_ids/test',
-        #     blob['video_name'], 'img1', blob['frame_name'].replace('.jpg', '.txt'))
-        # label_i_txt = os.path.join(
-        #     '/home/user/PycharmProjects/MOT_Project/mmtracking/data/MOT_01/labels_with_ids/test',
-        #     blob['video_name'], 'img1', blob['frame_name'].replace('.jpg', '.txt'))
-        # if not os.path.exists(self.main_args.score_save_r):
-        #     os.makedirs(self.main_args.score_save_r)
-        #     os.makedirs(self.main_args.score_save_i)
-        # if os.path.exists(label_r_txt) and os.path.exists(label_i_txt):
-        #     bboxes_r = np.loadtxt(label_r_txt, dtype=np.float32).reshape(-1, 6)
-        #     bboxes_i = np.loadtxt(label_i_txt, dtype=np.float32).reshape(-1, 6)
-        #     # label_r = torch.ones(bboxes_r.shape[0], dtype=np.int)
-        #     # label_i = torch.ones(bboxes_i.shape[0], dtype=np.int)
-        #
-        #     with open(f'{self.main_args.score_save_r}/{video_name}.txt', "a+") as f:
-        #         writer = csv.writer(f, delimiter=',')
-        #         # x = det_scores_r[bboxes_r.shape[0] - 1]  # last detection value
-        #         # y = det_scores_r[bboxes_r.shape[0]]  # first background value
-        #         # z = det_scores_r[bboxes_r.shape[0]:].mean()
-        #         # m = det_scores_r.mean()  # score mean value
-        #         # v = det_scores_r.std()
-        #         writer.writerow([fim_id, bboxes_r.shape[0]] + [x.item() for x in list(det_scores_r.cpu().chunk(300))])
-        #         # writer.writerow([fim_id, bboxes_r.shape[0], '%f' % x, '%f' % y, '%f' % z, '%f' % m, '%f' % v])
-        #     with open(f'{self.main_args.score_save_i}/{video_name}.txt', "a+") as f:
-        #         writer = csv.writer(f, delimiter=',')
-        #         # x = det_scores_i[bboxes_i.shape[0] - 1]
-        #         # y = det_scores_i[bboxes_i.shape[0]]
-        #         # z = det_scores_i[bboxes_i.shape[0]:].mean()
-        #         # m = det_scores_i.mean()
-        #         # v = det_scores_i.std()
-        #         # writer.writerow([fim_id, bboxes_i.shape[0], '%f' % x, '%f' % y, '%f' % z, '%f' % m, '%f' % v])
-        #         writer.writerow([fim_id, bboxes_i.shape[0]] + [x.item() for x in list(det_scores_i.cpu().chunk(300))])
-        ##########################################################################################################
-
-        ############################################################################################################
-
-        ####################################################
-        # plot valid dets
-        # import matplotlib.pyplot as plt
-        # import matplotlib
-        # img_r = blob['img_r'][0, :, :, :].permute(1, 2, 0).cpu().numpy()
-        # img_i = blob['img_i'][0, :, :, :].permute(1, 2, 0).cpu().numpy()
-
-        # img_r = blob['img_r'].cpu().numpy()
-        # img_i = blob['img_i'].cpu().numpy()
-        # # cv2.imshow('img_r', img_r)
-        # # matplotlib.use('tkagg')
-        # # plt.figure()
-        # # plt.imshow(img_r)
-        # # plt.show()
-        # from mmdet.core.visualization import imshow_det_bboxes
-        # # from util.image_mmdet import imshow_det_bboxes
-        # from util.image import bbox_ncxcywh_to_xyxy
-        # CLASSES = ('ship', 'car', 'cyclist', 'pedestrian', 'bus', 'drone', 'plane')
-        # label_r_txt = os.path.join(
-        #     '/home/user/PycharmProjects/MOT_Project/mmtracking/data/MOT_00/labels_with_ids/test',
-        #     blob['video_name'], 'img1', blob['frame_name'].replace('.jpg', '.txt'))
-        #
-        # bboxes_r = np.loadtxt(label_r_txt, dtype=np.float32).reshape(-1, 6)
-        # label_r = torch.ones(bboxes_r.shape[0], dtype=np.int)
-        # gt_bboxes_r = bbox_ncxcywh_to_xyxy(bboxes_r[:, 2:])
-        #
-        # label_i_txt = os.path.join(
-        #     '/home/user/PycharmProjects/MOT_Project/mmtracking/data/MOT_01/labels_with_ids/test',
-        #     blob['video_name'], 'img1', blob['frame_name'].replace('.jpg', '.txt'))
-        #
-        # bboxes_i = np.loadtxt(label_i_txt, dtype=np.float32).reshape(-1, 6)
-        # label_i = torch.ones(bboxes_i.shape[0], dtype=np.int)
-        # gt_bboxes_i = bbox_ncxcywh_to_xyxy(bboxes_i[:, 2:])
-
-        # if not os.path.exists(f'gt_images/00/{video_name}'):
-        #     os.makedirs(f'gt_images/01/{video_name}')
-        #     os.makedirs(f'gt_images/00/{video_name}')
-        # img_r_gt = imshow_det_bboxes(
-        #     img_r,
-        #     gt_bboxes_r.numpy(),
-        #     label_r,
-        #     None,
-        #     class_names=CLASSES,
-        #     bbox_color=None,
-        #     text_color=None,
-        #     show=False,
-        #     out_file=f'gt_images/00/{video_name}/{fim_id}_gt_r.png')
-        # img_r_det = imshow_det_bboxes(
-        #     img_r,
-        #     det_pos_r[det_scores_r > det_scores_r.mean()][:-2, :].cpu().numpy(),
-        #     torch.ones(det_pos_r[det_scores_r > det_scores_r.mean()].shape[0], dtype=np.int),
-        #     None,
-        #     class_names=CLASSES,
-        #     bbox_color=None,
-        #     text_color=None,
-        #     show=False,
-        #     out_file=f'{video_name}/{fim_id}_det_r.png')
-        # img_i_gt = imshow_det_bboxes(
-        #     img_i,
-        #     gt_bboxes_i.numpy(),
-        #     label_i,
-        #     None,
-        #     class_names=CLASSES,
-        #     bbox_color=None,
-        #     text_color=None,
-        #     show=False,
-        #     out_file=f'gt_images/01/{video_name}/{fim_id}_gt_i.png')
-        # img_i_det = imshow_det_bboxes(
-        #     img_i,
-        #     det_pos_i[det_scores_i > det_scores_i.mean()][:-2, :].cpu().numpy(),
-        #     torch.ones(det_pos_i[det_scores_i > det_scores_i.mean()].shape[0], dtype=np.int),
-        #     None,
-        #     class_names=CLASSES,
-        #     bbox_color=None,
-        #     text_color=None,
-        #     show=False,
-        #     out_file=f'{video_name}/{fim_id}_det_i.png')
-        # img_r_gt = imshow_det_bboxes(
-        #     img_r ,
-        #     gt_bboxes_r.numpy(),
-        #     label_r,
-        #     None,
-        #     class_names=CLASSES,
-        #     bbox_color=None,
-        #     text_color=None,
-        #     show=False,
-        #     out_file=f'debug_images/00/{video_name}/{fim_id}_gt_r.png')
-        # img_r_det = imshow_det_bboxes(
-        #     img_r ,
-        #     det_pos_r[det_scores_r > det_scores_r.mean()][:-2, :].cpu().numpy(),
-        #     torch.ones(det_pos_r[det_scores_r > det_scores_r.mean()].shape[0], dtype=np.int),
-        #     None,
-        #     class_names=CLASSES,
-        #     bbox_color=None,
-        #     text_color=None,
-        #     show=False,
-        #     out_file=f'debug_images/00/{video_name}/{fim_id}_det_r.png')
-        # img_i_gt = imshow_det_bboxes(
-        #     img_i ,
-        #     gt_bboxes_i.numpy(),
-        #     label_i,
-        #     None,
-        #     class_names=CLASSES,
-        #     bbox_color=None,
-        #     text_color=None,
-        #     show=False,
-        #     out_file=f'debug_images/01/{video_name}/{fim_id}_gt_i.png')
-        # img_i_det = imshow_det_bboxes(
-        #     img_i ,
-        #     det_pos_i[det_scores_i > det_scores_i.mean()][:-2, :].cpu().numpy(),
-        #     torch.ones(det_pos_i[det_scores_i > det_scores_i.mean()].shape[0], dtype=np.int),
-        #     None,
-        #     class_names=CLASSES,
-        #     bbox_color=None,
-        #     text_color=None,
-        #     show=False,
-        #     out_file=f'debug_images/01/{video_name}/{fim_id}_det_i.png')
-
-        ####################################################
-
-        ##################
-        # Predict tracks #
-        ##################
         if len(self.tracks_r):
             [det_pos_r, det_scores_r, dets_features_birth_r, det_cls_r,
              edge_r] = self.dual_tracks_dets_matching_tracking(
@@ -1230,9 +1011,6 @@ class Tracker:
         # matches, u_track, u_detection = self.linear_assignment(iou_dist.cpu().numpy(),
         #                                                        thresh=self.main_args.match_thresh)
 
-
-
-
         # un = pre_dets[u_track[0]] / 4
         # hm_u = self.heat_i[0]
         # hm_u = torch.clamp(hm_u.sigmoid(), min=1e-4, max=1 - 1e-4)
@@ -1244,14 +1022,12 @@ class Tracker:
 
         # ret = self.find_match(outputs, pre_dets[u_track[0]], 1)
 
-
         # ct_u = outputs[1]['center_offset'][0, :, :, int(un[1]):int(un[3]), int(un[0]):int(un[2])]
         # wh_u = outputs[1]['wh'][0, :, :, int(un[1]):int(un[3]), int(un[0]):int(un[2])]
         # reg_u = outputs[1]['reg'][0, :, :, int(un[1]):int(un[3]), int(un[0]):int(un[2])]
         # ret = generic_decode(hm_u, ct_u, wh_u, reg_u, 1)
         # bb = ret['bboxes']*4
         # sc = ret['scores']
-
 
         # r_cts = self.bbox_to_ct(pre_dets)/4
         # i_cts = self.bbox_to_ct(dets)/4

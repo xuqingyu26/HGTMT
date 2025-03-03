@@ -1,16 +1,15 @@
 import copy
-from torch import nn
-from models.PVT_v2 import PyramidVisionTransformerV2
 from functools import partial
-from models.ut import MSDeformAttn
+
 import torch
 import torch.nn.functional as F
-from models.position_encoding import PositionEmbeddingSine
-from models.featurefusion_network import FeatureFusionNetwork
-import numpy as np
-from torch_geometric.nn import GATConv, GraphConv, GCNConv, AGNNConv, EdgeConv
-from torch_geometric.data import Data as gData
+from torch import nn
 from torch_geometric.data import Batch
+from torch_geometric.data import Data as gData
+from torch_geometric.nn import GATConv
+
+from models.PVT_v2 import PyramidVisionTransformerV2
+from models.ut import MSDeformAttn
 
 
 class DeformableTransformer(nn.Module):
@@ -308,16 +307,6 @@ class DeformableTransformer(nn.Module):
                     track_sample_i[:, :, 0] = track_cts_i[:, :, 0] / w
                     track_sample_i[:, :, 1] = track_cts_i[:, :, 1] / h
 
-                    # gather_feat_r = F.grid_sample(hs_r[-1].detach(), (2.0 * track_sample_r - 1.0).unsqueeze(1),
-                    #                               mode='bilinear', padding_mode='zeros', align_corners=False)[:, :, 0,
-                    #                 :].transpose(1, 2)
-                    # gather_feat_i = F.grid_sample(hs_i[-1].detach(), (2.0 * track_sample_i - 1.0).unsqueeze(1),
-                    #                               mode='bilinear', padding_mode='zeros', align_corners=False)[:, :, 0,
-                    #                 :].transpose(1, 2)
-
-
-
-
                 # make reference pts #
                 pre_reference_points_r.append(pre_sample_r)
                 pre_reference_points_i.append(pre_sample_i)
@@ -352,8 +341,6 @@ class DeformableTransformer(nn.Module):
                                                                    fm_width=self.default_backbone_feature_resolution[
                                                                        1])  # need to change
 
-
-
                         edge_index = torch.cat([edge_index1, edge_index2], dim=1).long()
 
                         graph_nodes_r = torch.cat((gather_feat[i], memories_r[0][i].contiguous()),
@@ -364,23 +351,6 @@ class DeformableTransformer(nn.Module):
                         data_list_i.append(gData(x=graph_nodes_i, edge_index=edge_index))
                         center_ind = offset + len(gather_feat[i]) + torch.arange(len(pre_memory_r[i].reshape(C, -1).T))
                         center_inds.append(center_ind)
-
-
-                        # if self.training:
-                            # track_ct_int_i = torch.tensor(track_cts_i, dtype=torch.int32)
-                            # track_ct_int_r = torch.tensor(track_cts_r, dtype=torch.int32)
-                            # index_track_i = (track_ct_int_i[i, :, 1] * W + track_ct_int_i[i, :, 0] + gather_feat[i].shape[
-                            #     0]).unsqueeze(0)
-                            # index_track_r = (track_ct_int_r[i, :, 1] * W + track_ct_int_r[i, :, 0] + gather_feat[i].shape[
-                            #     0]).unsqueeze(0)
-                            # index_ct_r = torch.arange(pre_sample_r.shape[1]).unsqueeze(0).to(track_ct_int_i.device)
-                            # index_ct_i = (torch.arange(pre_sample_i.shape[1]) + gather_feat_r[i].shape[0]).unsqueeze(0).to(
-                            #     track_ct_int_i.device)
-
-                            # edge_index_gt_r = torch.cat([index_ct_r, index_track_r], dim=0)
-                            # edge_index_gt_i = torch.cat([index_ct_i, index_track_i], dim=0)
-                            # edge_gt_r.append(edge_index_gt_r)
-                            # edge_gt_i.append(edge_index_gt_i)
                         edge_ind_r = offset + torch.arange(pre_sample_r.shape[1])
                         edge_ind_i = offset + torch.arange(pre_sample_i.shape[1]) + gather_pre_feat_r[i].shape[0]
                         edge_inds_r.append(edge_ind_r)
@@ -405,10 +375,6 @@ class DeformableTransformer(nn.Module):
                         else:
                             gnn_feat_r = gnn_out_r
                             gnn_feat_i = gnn_out_i
-                        # if self.return_pre_gnn_layer_outputs:
-                        #     cached_feats.append(gnn_feat[center_inds].reshape(N, H, W, C).permute(0, 3, 1, 2).contiguous())
-                    # slice the features corresponding to the centers of each image in the batch
-
 
                     if self.training:
                         center_feats_r = gnn_feat_r[center_inds].reshape(B, H, W, C).permute(0, 3, 1,
@@ -436,14 +402,14 @@ class DeformableTransformer(nn.Module):
 
                     else:
                         center_feats_r = gnn_feat_r[center_inds].reshape(B, H, W, C).permute(0, 3, 1,
-                                                                                                  2).contiguous()
+                                                                                             2).contiguous()
                         center_feats_i = gnn_feat_i[center_inds].reshape(B, H, W, C).permute(0, 3, 1,
-                                                                                                  2).contiguous()
+                                                                                             2).contiguous()
                         gnn_pre_fea_r = gnn_feat_r[edge_inds_r].reshape(B, gather_pre_feat_r.shape[1], C).permute(0, 2,
-                                                                                                              1).contiguous().unsqueeze(
+                                                                                                                  1).contiguous().unsqueeze(
                             -1)
                         gnn_pre_fea_i = gnn_feat_i[edge_inds_i].reshape(B, gather_pre_feat_i.shape[1], C).permute(0, 2,
-                                                                                                              1).contiguous().unsqueeze(
+                                                                                                                  1).contiguous().unsqueeze(
                             -1)
 
                         tracks_feat_r = center_feats_r.clone().reshape(B, C, H * W).unsqueeze(-2)
@@ -464,7 +430,6 @@ class DeformableTransformer(nn.Module):
 
                 else:
                     edge_r, edge_i = None, None
-
 
         if no_pre:
             del pre_outs_r, pre_outs_i
@@ -498,8 +463,7 @@ class DeformableTransformer(nn.Module):
         # for inference speed up #
 
         return [[hs_r, pre_hs_r]], [
-                [hs_i, pre_hs_i]], [gather_feat_r, gather_feat_i],[edge_r, edge_i]
-
+            [hs_i, pre_hs_i]], [gather_feat_r, gather_feat_i], [edge_r, edge_i]
 
 
 class DeformableTransformerDecoderLayer(nn.Module):
