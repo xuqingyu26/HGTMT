@@ -447,7 +447,7 @@ class DeformableTransformer(nn.Module):
         # for inference speed up #
 
         return [[hs_r, pre_hs_r]], [
-            [hs_i, pre_hs_i]], [gather_feat_r, gather_feat_i] #, [edge_r, edge_i]
+            [hs_i, pre_hs_i]], [edge_r, edge_i]
 
 
 class DeformableTransformerDecoderLayer(nn.Module):
