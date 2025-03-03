@@ -384,15 +384,20 @@ class DeformableTransformer(nn.Module):
                                                                                          2).contiguous()
                     center_feats_i = gnn_feat_i[center_inds].reshape(B, H, W, C).permute(0, 3, 1,
                                                                                          2).contiguous()
+                    tracks_feat_r = F.grid_sample(center_feats_r, (2.0 * track_sample_r - 1.0).unsqueeze(1),
+                                                  mode='bilinear', padding_mode='zeros', align_corners=False)[:,
+                                    :, 0, :].unsqueeze(-2)
+                    tracks_feat_i = F.grid_sample(center_feats_i, (2.0 * track_sample_i - 1.0).unsqueeze(1),
+                                                  mode='bilinear', padding_mode='zeros', align_corners=False)[:,
+                                    :, 0, :].unsqueeze(-2)
+                    
+                    
                     gnn_pre_fea_r = gnn_feat_r[edge_inds_r].reshape(B, gather_pre_feat_r.shape[1], C).permute(0, 2,
                                                                                                               1).contiguous().unsqueeze(
                         -1)
                     gnn_pre_fea_i = gnn_feat_i[edge_inds_i].reshape(B, gather_pre_feat_i.shape[1], C).permute(0, 2,
                                                                                                               1).contiguous().unsqueeze(
                         -1)
-
-                    tracks_feat_r = center_feats_r.clone().reshape(B, C, H * W).unsqueeze(-2)
-                    tracks_feat_i = center_feats_i.clone().reshape(B, C, H * W).unsqueeze(-2)
 
                     result_edge_feature_r = gnn_pre_fea_r - tracks_feat_r
                     result_edge_feature_i = gnn_pre_fea_i - tracks_feat_i
