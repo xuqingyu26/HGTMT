@@ -237,13 +237,13 @@ class DeformableDETR(nn.Module):
                 pre_cts_i: Tensor, no_pre_cts, tracking_r, tracking_i):
         assert isinstance(samples_i, NestedTensor)
 
-        merged_hs_r, merged_hs_i, _ = self.transformer(samples_r, pre_samples_r, samples_i, pre_samples_i,
+        merged_hs_r, merged_hs_i, [edge_r, edge_i] = self.transformer(samples_r, pre_samples_r, samples_i, pre_samples_i,
                                                                  pre_cts_r, pre_cts_i, no_pre_cts, tracking_r, tracking_i)
 
         out_i = self.regress(merged_hs_i)
         out_r = self.regress(merged_hs_r)
 
-        return [out_r, out_i], _
+        return [out_r, out_i], [edge_r, edge_i]
 
     def regress(self, merged_hs):
         hs = []
