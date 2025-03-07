@@ -1,5 +1,5 @@
 # HGTMT
-PyTorch implementation of  "Heterogeneous Graph Transformer for Multiple Tiny Object Tracking in RGB-T Videos", IEEE Transactions on MultiMedia. Feel free to contact me (xuqingyu@nudt.edu.cn) if any questions. Please star the repository~~
+PyTorch implementation of  "Heterogeneous Graph Transformer for Multiple Tiny Object Tracking in RGB-T Videos", IEEE Transactions on MultiMedia，[paper](https://arxiv.org/abs/2412.10861). Feel free to contact me (xuqingyu@nudt.edu.cn) if any questions. Please cite our paper and star the repository.
 ## Dataset:
 Download the dataset at [BaiduYun](https://pan.baidu.com/s/1noAoDpJGc3AFF_4gnBH2wg?pwd=3crl)[3crl].
 ## Code: 
@@ -9,7 +9,9 @@ Download the dataset at [BaiduYun](https://pan.baidu.com/s/1noAoDpJGc3AFF_4gnBH2
  * Run tracking/RGBT-Tiny_private_graph_Track2_crossmodal.py for tracking.
 ## Acknowledgement:
  * This repository benefits a lot from [TransCenter](https://github.com/yihongXU/TransCenter) and [GSDT](https://github.com/yongxinw/GSDT).
-## Cite:
+   
+## Bibtex:
+If you find this code useful, please star the project and consider citing:
 ```
 @article{xu2024heterogeneous,
   title={Heterogeneous Graph Transformer for Multiple Tiny Object Tracking in RGB-T Videos},
