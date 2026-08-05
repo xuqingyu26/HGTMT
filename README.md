@@ -1,7 +1,7 @@
 # HGTMT
 PyTorch implementation of  "Heterogeneous Graph Transformer for Multiple Tiny Object Tracking in RGB-T Videos", IEEE Transactions on MultiMedia，[paper](https://arxiv.org/abs/2412.10861). Feel free to contact me (xuqingyu@nudt.edu.cn) if any questions. Please cite our paper and star the repository.
 ## VT-Tiny-MOT Dataset:
-Download the VT-Tiny-MOT dataset at [BaiduYun](https://pan.baidu.com/s/1noAoDpJGc3AFF_4gnBH2wg?pwd=3crl)[3crl].
+Download the VT-Tiny-MOT dataset at [BaiduYun](https://pan.baidu.com/s/1noAoDpJGc3AFF_4gnBH2wg?pwd=3crl)[3crl] or [Google Drive](https://drive.google.com/file/d/17CgPc3huCf-KMr-I9zFVqmV0hzBVky9w/view?usp=drive_link).
 ## Code: 
  * Create the working environment through environment.yml
  * Download the transformer pvtv2 backbone from [PVTv2](https://github.com/whai362/PVT).
